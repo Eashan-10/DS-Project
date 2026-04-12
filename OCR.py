@@ -23,7 +23,13 @@ def extract_ticket_data(image_frame):
     print("🧠 SENDING TICKET TO GEMINI 2.5 FLASH...")
     print("="*40)
     
-    rgb_frame = cv2.cvtColor(image_frame, cv2.COLOR_BGR2RGB)
+    # 1. Boost contrast and brightness to separate faded ink from dark borders
+    alpha = 1.5  # Contrast control (1.5 is a 50% boost. Increase to 2.0 if still failing)
+    beta = 20    # Brightness control (0 is normal. Higher makes the background whiter)
+    enhanced_frame = cv2.convertScaleAbs(image_frame, alpha=alpha, beta=beta)
+
+    # 2. Convert the ENHANCED frame to standard RGB for the AI
+    rgb_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(rgb_frame)
 
     prompt = """
@@ -35,15 +41,16 @@ def extract_ticket_data(image_frame):
     Extract the following data strictly in JSON format:
     
     COMMON FIELDS (Must always be extracted):
-    - "Ticket ID / UTS No.": The 10-character alphanumeric ID.
-    - "Source Station": The starting station.
-    - "Destination Station": The ending station.
+    - "Ticket ID / UTS No.": Look explicitly for the text "UTS:" or "UTS No:". The ID is the alphanumeric string immediately following it. CRITICAL: Do NOT read the number next to the letter 'M' in the top corners.
+    - "Source Station": Extract ONLY the alphabetical station name. You MUST strip out any distance numbers, brackets, or kilometer markers (e.g., if you see "DADAR(27)" or "DADAR -27 km-", output strictly "DADAR").
+    - "Destination Station": Extract ONLY the alphabetical station name. You MUST strip out any ampersands ("&") and distance markers (e.g., if you see "& KALYAN", output strictly "KALYAN").
     - "Ticket Class": Must be exactly "First Class", "Second Class", or "AC EMU".
     - "Ticket Category": Must be "Journey Ticket", "Return Ticket", or "Season Pass".
 
     CONDITIONAL DATE FIELDS (Follow these rules strictly based on the Ticket Category):
     - If "Journey Ticket" or "Return Ticket": 
         Extract "Booking Date & Time" (Format DD/MM/YYYY HH:MM). 
+        CRITICAL HINT: On physical tickets, this is usually printed in faded dot-matrix ink near the very top or bottom edge. It heavily overlaps with the pre-printed borders. Look extremely closely at the border lines for hidden digits. If a number is cut in half by a line, use the visible half to infer the digit.
         Set "Valid From Date" and "Valid To Date" to "Not Applicable".
     - If "Season Pass": 
         Extract "Valid From Date" and "Valid To Date" (Format DD-MM-YYYY). 

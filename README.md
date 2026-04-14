@@ -11,7 +11,7 @@ Steps to implement OCR:
 	2) .\venv\Scripts\activate
 
 3. Install this library:
-	pip install google-genai opencv-python pillow python-dotenv
+	pip install google-genai opencv-python pillow python-dotenv networkx
 
 4. Get Your API Key
 	Go to Google AI Studio. (https://aistudio.google.com/app/api-keys?project=gen-lang-client-0177722062)

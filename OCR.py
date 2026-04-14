@@ -9,7 +9,8 @@ from PIL import Image
 # ==========================================
 # 1. INITIALIZE GEMINI AI SECURELY
 # ==========================================
-load_dotenv()
+# Add override=True to force Python to read the new key
+load_dotenv(override=True) 
 api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
@@ -31,7 +32,7 @@ ALL_STATIONS = ", ".join(set(WESTERN_LINE + CENTRAL_LINE + HARBOUR_LINE))
 
 def extract_ticket_data(image_frame):
     print("\n" + "="*40)
-    print("🧠 SENDING TICKET TO GEMINI 2.5 FLASH...")
+    print("SCANNING...")
     print("="*40)
 
     # Boost contrast and brightness to separate faded ink from dark borders
@@ -118,7 +119,7 @@ def extract_ticket_data(image_frame):
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash-001',
             contents=[pil_image, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

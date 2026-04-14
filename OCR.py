@@ -9,71 +9,111 @@ from PIL import Image
 # ==========================================
 # 1. INITIALIZE GEMINI AI SECURELY
 # ==========================================
-load_dotenv() # Loads the hidden variables from the .env file
+load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
     print("❌ Error: API key not found. Please check your .env file.")
     exit()
 
-client = genai.Client(api_key=api_key) 
+client = genai.Client(api_key=api_key)
 
 # ==========================================
 # 2. VALIDATION DATABASE
 # ==========================================
 WESTERN_LINE = ["CHURCHGATE", "MARINE LINES", "CHARNI ROAD", "GRANT ROAD", "MUMBAI CENTRAL", "MAHALAXMI", "LOWER PAREL", "PRABHADEVI", "DADAR", "MATUNGA ROAD", "MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON", "MALAD", "KANDIVALI", "BORIVALI", "DAHISAR", "MIRA ROAD", "BHAYANDAR", "NAIGAON", "VASAI ROAD", "NALASOPARA", "VIRAR"]
 CENTRAL_LINE = ["CSMT", "MASJID", "SANDHURST ROAD", "BYCULLA", "CHINCHPOKLI", "CURREY ROAD", "PAREL", "DADAR", "MATUNGA", "SION", "KURLA", "GHATKOPAR", "THANE", "DOMBIVLI", "KALYAN", "ULHASNAGAR", "AMBERNATH"]
-HARBOUR_LINE = ["MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON","KINGS CIRCLE", "VADALA ROAD", "SEWRI", "CHEMBUR", "VASHI", "NERUL", "BELAPUR", "PANVEL"]
-# Combine them into one string for the AI
-ALL_STATIONS = ", ".join(set(CENTRAL_LINE + HARBOUR_LINE))
+HARBOUR_LINE = ["MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON", "KINGS CIRCLE", "VADALA ROAD", "SEWRI", "CHEMBUR", "VASHI", "NERUL", "BELAPUR", "PANVEL"]
+
+# FIX: All three lines are now included
+ALL_STATIONS = ", ".join(set(WESTERN_LINE + CENTRAL_LINE + HARBOUR_LINE))
 
 
 def extract_ticket_data(image_frame):
     print("\n" + "="*40)
     print("🧠 SENDING TICKET TO GEMINI 2.5 FLASH...")
     print("="*40)
-    
-    # 1. Boost contrast and brightness to separate faded ink from dark borders
-    alpha = 1.5  # Contrast control (1.5 is a 50% boost. Increase to 2.0 if still failing)
-    beta = 20    # Brightness control (0 is normal. Higher makes the background whiter)
+
+    # Boost contrast and brightness to separate faded ink from dark borders
+    alpha = 1.5
+    beta = 20
     enhanced_frame = cv2.convertScaleAbs(image_frame, alpha=alpha, beta=beta)
 
-    # 2. Convert the ENHANCED frame to standard RGB for the AI
     rgb_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(rgb_frame)
 
-    # 3. Dynamic Prompt Injection (Notice the 'f' string format)
     prompt = f"""
-    You are an expert at reading Mumbai Local train tickets. You must be able to read BOTH physically printed dot-matrix tickets and digital 'Railone' app tickets.
-    
-    First, analyze the image to determine the Ticket Category: "Journey Ticket", "Return Ticket", or "Season Pass".
-    Use context to fix blurry or faded text on physical tickets.
+    You are an expert at reading Mumbai Local train tickets. You can read THREE types of tickets:
+    1. Physical dot-matrix UTS tickets (small, printed with faded ink and dark borders)
+    2. Digital 'Railone' app tickets (clean digital format on a smartphone screen)
+    3. Physical ATVM tickets (printed at station vending machines — white paper, bold black ink,
+       "HAPPY JOURNEY / शुभ यात्रा" header in an orange/brown banner, Indian Railways logo,
+       QR code in the top right, and a large AIA booking number at the top)
 
-    CRITICAL SPELLING RULE: 
-    The Mumbai rail network only contains specific stations. The station names you extract MUST perfectly match a station from this allowed list: 
+    First, identify which ticket type you are looking at, then extract all fields accordingly.
+
+    CRITICAL SPELLING RULE:
+    The Mumbai rail network only contains specific stations. The station names you extract MUST
+    perfectly match a station from this allowed list:
     [{ALL_STATIONS}]
-    
-    If the ticket text is blurry and looks like a typo (e.g., "BADAR", "BAJAR", or "DADR"), you MUST map it to the closest valid station from the list above (e.g., "DADAR"). Do not output invalid station names.
 
-    Extract the following data strictly in JSON format:
-    
-    COMMON FIELDS (Must always be extracted):
-    - "Ticket ID / UTS No.": Look explicitly for the text "UTS:" or "UTS No:". The ID is the alphanumeric string immediately following it. CRITICAL: Do NOT read the number next to the letter 'M' in the top corners.
-    - "Source Station": Extract ONLY the alphabetical station name. You MUST strip out any distance numbers, brackets, or kilometer markers (e.g., if you see "DADAR(27)" or "DADAR -27 km-", output strictly "DADAR"). MUST be from the allowed list.
-    - "Destination Station": Extract ONLY the alphabetical station name. You MUST strip out any ampersands ("&") and distance markers (e.g., if you see "& KALYAN", output strictly "KALYAN"). MUST be from the allowed list.
-    - "Ticket Class": Must be exactly "First Class", "Second Class", or "AC EMU".
-    - "Ticket Category": Must be "Journey Ticket", "Return Ticket", or "Season Pass".
+    If the ticket text is blurry or looks like a typo (e.g., "BADAR", "LOWR PAREL"), you MUST
+    map it to the closest valid station from the allowed list. Do not output invalid station names.
 
-    CONDITIONAL DATE FIELDS (Follow these rules strictly based on the Ticket Category):
-    - If "Journey Ticket" or "Return Ticket": 
-        Extract "Booking Date & Time" (Format DD/MM/YYYY HH:MM). 
-        CRITICAL HINT: On physical tickets, this is usually printed in faded dot-matrix ink near the very top or bottom edge. It heavily overlaps with the pre-printed borders. Look extremely closely at the border lines for hidden digits. If a number is cut in half by a line, use the visible half to infer the digit.
+    Extract the following fields strictly in JSON format:
+
+    --- COMMON FIELDS (extract for ALL ticket types) ---
+
+    - "Ticket Type": Must be exactly one of: "UTS App Ticket", "ATVM Ticket", or "Railone Ticket".
+
+    - "Ticket ID / UTS No.":
+        * For ATVM tickets: Look for the label "UTS NO :" and extract the alphanumeric code after it
+          (e.g., "ZU82EDE061"). Do NOT use the large "AIA XXXXXXXX" number at the top.
+        * For UTS App / Railone tickets: Look for "UTS:" or "UTS No:" label and extract the code after it.
+
+    - "Booking ID":
+        * For ATVM tickets: Extract the large alphanumeric code at the very top (e.g., "AIA 12070115").
+          This is separate from the UTS No.
+        * For other ticket types: Set to "Not Applicable".
+
+    - "Source Station": Extract ONLY the station name. Strip out distance markers, brackets, km values
+      (e.g., "CHARNI ROAD TO LOWER PAREL KM 6" -> Source is "CHARNI ROAD"). MUST be from the allowed list.
+
+    - "Destination Station": Extract ONLY the station name. Strip any "&", "KM X", or distance markers
+      (e.g., "LOWER PAREL KM 6" -> Destination is "LOWER PAREL"). MUST be from the allowed list.
+
+    - "Ticket Class":
+        * For ATVM tickets: "SECOND ORDINARY" maps to "Second Class", "FIRST CLASS" maps to "First Class".
+          Must output exactly "First Class", "Second Class", or "AC EMU".
+        * For other ticket types: Must be exactly "First Class", "Second Class", or "AC EMU".
+
+    - "Ticket Category": Must be exactly "Journey Ticket", "Return Ticket", or "Season Pass".
+
+    - "Number of Adults": Extract the number after "ADULT:" (e.g., 2). If not present, output 1.
+
+    - "Number of Children": Extract the number after "CHILD:" (e.g., 0). If not present, output 0.
+
+    - "Fare": Extract the ticket price (e.g., "Rs. 10/-" -> "Rs. 10"). If not found, output "Not Found".
+
+    - "Payment Mode": Look for "MODE:" label (e.g., "MODE:PYTM" -> "Paytm").
+      Common mappings: PYTM -> "Paytm", CASH -> "Cash", UPI -> "UPI".
+      If not present, output "Not Applicable".
+
+    --- CONDITIONAL DATE FIELDS ---
+
+    - If "Journey Ticket" or "Return Ticket":
+        Extract "Booking Date & Time" (Format DD/MM/YYYY HH:MM).
+        * For ATVM tickets: Look at the bottom line of the ticket. It contains a date and time
+          in the format DD/MM/YYYY HH:MM (e.g., "20/02/2026 20:02"). Extract this.
+        * For UTS/dot-matrix tickets: Look near the top or bottom edge in faded ink. If a digit
+          is cut in half by a border line, infer it from the visible portion.
         Set "Valid From Date" and "Valid To Date" to "Not Applicable".
-    - If "Season Pass": 
-        Extract "Valid From Date" and "Valid To Date" (Format DD-MM-YYYY). 
+
+    - If "Season Pass":
+        Extract "Valid From Date" and "Valid To Date" (Format DD-MM-YYYY).
         Set "Booking Date & Time" to "Not Applicable".
 
-    If any required field is completely unreadable due to glare or damage, output the value as "Not Found".
+    If any required field is completely unreadable, output its value as "Not Found".
     """
 
     try:
@@ -90,7 +130,7 @@ def extract_ticket_data(image_frame):
         print("\n✨ TICKET DATA SUCCESSFULLY EXTRACTED")
         print("-" * 40)
         for key, value in data.items():
-            print(f"{key.ljust(22)}: {value}")
+            print(f"{key.ljust(26)}: {value}")
         print("-" * 40 + "\n")
 
     except Exception as e:
@@ -99,9 +139,49 @@ def extract_ticket_data(image_frame):
         print("Please check your internet connection and try again.\n")
 
 
+# ==========================================
+# 3. SCAN FROM IMAGE FILE
+# ==========================================
+def scan_from_image():
+    print("\n" + "="*50)
+    print("🖼️  IMAGE FILE TICKET SCANNER")
+    print("="*50)
+    print("Supported formats: JPG, JPEG, PNG, BMP, WEBP")
+    print("Tip: You can drag and drop the image into the")
+    print("     terminal to auto-fill the path.\n")
+
+    image_path = input("📂 Enter the full path to your ticket image: ").strip()
+    image_path = image_path.strip('"').strip("'")
+
+    if not os.path.exists(image_path):
+        print(f"\n❌ Error: File not found at '{image_path}'")
+        print("Please double-check the path and try again.\n")
+        return
+
+    supported_formats = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+    if not image_path.lower().endswith(supported_formats):
+        print(f"\n❌ Error: Unsupported file format.")
+        print(f"Please use one of: {', '.join(supported_formats)}\n")
+        return
+
+    image_frame = cv2.imread(image_path)
+
+    if image_frame is None:
+        print(f"\n❌ Error: Could not read the image. The file may be corrupted.\n")
+        return
+
+    print(f"\n✅ Image loaded successfully: {os.path.basename(image_path)}")
+    print(f"   Resolution: {image_frame.shape[1]}x{image_frame.shape[0]} px")
+
+    extract_ticket_data(image_frame)
+
+
+# ==========================================
+# 4. CAMERA SCANNER
+# ==========================================
 def start_live_scanner():
     cap = cv2.VideoCapture(0)
-    
+
     if not cap.isOpened():
         print("❌ Error: Could not access the webcam.")
         return
@@ -118,16 +198,16 @@ def start_live_scanner():
         if not ret:
             print("Failed to grab camera frame.")
             break
-            
+
         cv2.imshow("Mumbai Local Ticket Scanner", frame)
-        
+
         key = cv2.waitKey(1) & 0xFF
-        
-        if key == 32: 
+
+        if key == 32:
             extract_ticket_data(frame)
             print("Shutting down scanner camera...")
             break
-            
+
         elif key == ord('q'):
             print("\nClosing scanner. Goodbye!")
             break
@@ -135,5 +215,27 @@ def start_live_scanner():
     cap.release()
     cv2.destroyAllWindows()
 
+
+# ==========================================
+# 5. MAIN MENU
+# ==========================================
 if __name__ == "__main__":
-    start_live_scanner()
+    print("\n" + "="*50)
+    print("   🚆 MUMBAI LOCAL TICKET SCANNER")
+    print("="*50)
+    print("How would you like to scan your ticket?\n")
+    print("  [1] 📷 Live Camera")
+    print("  [2] 🖼️  Upload an Image File")
+    print("  [Q] ❌ Quit")
+    print("="*50)
+
+    choice = input("\nEnter your choice (1 / 2 / Q): ").strip().upper()
+
+    if choice == "1":
+        start_live_scanner()
+    elif choice == "2":
+        scan_from_image()
+    elif choice == "Q":
+        print("\nGoodbye! 👋\n")
+    else:
+        print("\n❌ Invalid choice. Please run the script again and enter 1, 2, or Q.\n")

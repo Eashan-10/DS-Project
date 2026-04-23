@@ -1,48 +1,54 @@
 import cv2
 import json
 import os
+import base64
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-from PIL import Image
+from groq import Groq
 
 # ==========================================
-# 1. INITIALIZE GEMINI AI SECURELY
+# 1. INITIALIZE GROQ AI SECURELY
 # ==========================================
-load_dotenv() # Loads the hidden variables from the .env file
-api_key = os.getenv("GEMINI_API_KEY")
+load_dotenv(override=True) # Forces Python to read the fresh key
+api_key = os.getenv("GROQ_API_KEY")
 
 if not api_key:
-    print("❌ Error: API key not found. Please check your .env file.")
+    print("❌ Error: GROQ_API_KEY not found. Please check your .env file.")
     exit()
 
-client = genai.Client(api_key=api_key) 
+# Initialize the Groq client
+client = Groq(api_key=api_key) 
 
 # ==========================================
 # 2. VALIDATION DATABASE
 # ==========================================
 WESTERN_LINE = ["CHURCHGATE", "MARINE LINES", "CHARNI ROAD", "GRANT ROAD", "MUMBAI CENTRAL", "MAHALAXMI", "LOWER PAREL", "PRABHADEVI", "DADAR", "MATUNGA ROAD", "MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON", "MALAD", "KANDIVALI", "BORIVALI", "DAHISAR", "MIRA ROAD", "BHAYANDAR", "NAIGAON", "VASAI ROAD", "NALASOPARA", "VIRAR"]
 CENTRAL_LINE = ["CSMT", "MASJID", "SANDHURST ROAD", "BYCULLA", "CHINCHPOKLI", "CURREY ROAD", "PAREL", "DADAR", "MATUNGA", "SION", "KURLA", "GHATKOPAR", "THANE", "DOMBIVLI", "KALYAN", "ULHASNAGAR", "AMBERNATH"]
-HARBOUR_LINE = ["MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON","KINGS CIRCLE", "VADALA ROAD", "SEWRI", "CHEMBUR", "VASHI", "NERUL", "BELAPUR", "PANVEL"]
+HARBOUR_LINE = ["MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON","KINGS CIRCLE", "VADALA ROAD", "SEWRI","COTTON GREEN" ,"REARY ROAD" ,"DOCKYARD ROAD" ,"SANDHURST ROAD", "CHEMBUR", "VASHI", "NERUL", "BELAPUR", "PANVEL", "CSMT"]
 # Combine them into one string for the AI
-ALL_STATIONS = ", ".join(set(CENTRAL_LINE + HARBOUR_LINE))
+ALL_STATIONS = ", ".join(set(CENTRAL_LINE + HARBOUR_LINE + WESTERN_LINE))
 
 
 def extract_ticket_data(image_frame):
     print("\n" + "="*40)
-    print("🧠 SENDING TICKET TO GEMINI 2.5 FLASH...")
+    print("🧠 SENDING TICKET TO GROQ (LLAMA 3.2 VISION)...")
     print("="*40)
     
     # 1. Boost contrast and brightness to separate faded ink from dark borders
-    alpha = 1.5  # Contrast control (1.5 is a 50% boost. Increase to 2.0 if still failing)
-    beta = 20    # Brightness control (0 is normal. Higher makes the background whiter)
+    alpha = 1.5  
+    beta = 20    
     enhanced_frame = cv2.convertScaleAbs(image_frame, alpha=alpha, beta=beta)
 
-    # 2. Convert the ENHANCED frame to standard RGB for the AI
-    rgb_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(rgb_frame)
+    # 2. SHRINK THE PAYLOAD (Max 800px width for fast API transmission)
+    height, width = enhanced_frame.shape[:2]
+    new_width = 800
+    new_height = int((new_width / width) * height)
+    resized_frame = cv2.resize(enhanced_frame, (new_width, new_height))
 
-    # 3. Dynamic Prompt Injection (Notice the 'f' string format)
+    # 3. Convert OpenCV frame to a Base64 String for Groq
+    # Groq API requires the image to be passed as a base64 encoded string
+    _, buffer = cv2.imencode('.jpg', resized_frame)
+    base64_image = base64.b64encode(buffer).decode('utf-8')
+
     prompt = f"""
     You are an expert at reading Mumbai Local train tickets. You must be able to read BOTH physically printed dot-matrix tickets and digital 'Railone' app tickets.
     
@@ -55,12 +61,15 @@ def extract_ticket_data(image_frame):
     
     If the ticket text is blurry and looks like a typo (e.g., "BADAR", "BAJAR", or "DADR"), you MUST map it to the closest valid station from the list above (e.g., "DADAR"). Do not output invalid station names.
 
-    Extract the following data strictly in JSON format:
+    Extract the following data strictly in JSON format. Do NOT include any markdown formatting, backticks, or extra text. Output ONLY the raw JSON object.
     
     COMMON FIELDS (Must always be extracted):
-    - "Ticket ID / UTS No.": Look explicitly for the text "UTS:" or "UTS No:". The ID is the alphanumeric string immediately following it. CRITICAL: Do NOT read the number next to the letter 'M' in the top corners.
-    - "Source Station": Extract ONLY the alphabetical station name. You MUST strip out any distance numbers, brackets, or kilometer markers (e.g., if you see "DADAR(27)" or "DADAR -27 km-", output strictly "DADAR"). MUST be from the allowed list.
-    - "Destination Station": Extract ONLY the alphabetical station name. You MUST strip out any ampersands ("&") and distance markers (e.g., if you see "& KALYAN", output strictly "KALYAN"). MUST be from the allowed list.
+   - "Ticket ID / UTS No.": 
+        For physical tickets, look explicitly for the text "UTS:" or "UTS No:" and extract the alphanumeric string immediately following it. 
+        For digital app tickets, the "UTS" label is often missing. Instead, look for the standalone 10-character alphanumeric string (e.g., "X015EBI2F9") typically located on the right side, directly opposite the Ticket Category (e.g., across from "Journey Ticket"). 
+        CRITICAL: Do NOT read the number next to the letter 'M' in the top corners. The ID is often attached directly to the colon with NO SPACE (e.g., if you see "UTS:B0IHEA1418", extract strictly "B0IHEA1418").
+    - "Source Station": Extract ONLY the alphabetical station name. CRITICAL FOR SEASON PASSES: Stations are often printed on a single line like "SOURCE(dist) & DESTINATION" (e.g., "DAHISAR(27) & VADALA ROAD"). The source is the word BEFORE the bracketed distance number. You MUST strip out any distance numbers or brackets. MUST be from the allowed list.
+    - "Destination Station": Extract ONLY the alphabetical station name. CRITICAL FOR SEASON PASSES: The destination is usually printed on the same line as the source, immediately AFTER an ampersand ("&") (e.g., in "& VADALA ROAD", extract strictly "VADALA ROAD"). MUST be from the allowed list.
     - "Ticket Class": Must be exactly "First Class", "Second Class", or "AC EMU".
     - "Ticket Category": Must be "Journey Ticket", "Return Ticket", or "Season Pass".
 
@@ -77,15 +86,30 @@ def extract_ticket_data(image_frame):
     """
 
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[pil_image, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
+        # 4. Fire the Base64 image and prompt to Groq's Vision Model
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                            },
+                        },
+                    ],
+                }
+            ],
+            temperature=0.1, # Low temperature forces stricter JSON formatting
         )
 
-        data = json.loads(response.text)
+        # Extract response text and clean up any accidental markdown blocks 
+        raw_response = response.choices[0].message.content
+        clean_json = raw_response.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_json)
 
         print("\n✨ TICKET DATA SUCCESSFULLY EXTRACTED")
         print("-" * 40)
@@ -93,6 +117,9 @@ def extract_ticket_data(image_frame):
             print(f"{key.ljust(22)}: {value}")
         print("-" * 40 + "\n")
 
+    except json.JSONDecodeError:
+        print("\n❌ Parsing Error: The AI did not return a valid JSON object.")
+        print(f"Raw Output: {raw_response}\n")
     except Exception as e:
         print(f"\n❌ Network or API Error: Could not verify ticket.")
         print(f"Details: {e}")
@@ -107,7 +134,7 @@ def start_live_scanner():
         return
 
     print("\n" + "="*50)
-    print("📷 CLOUD AI TICKET SCANNER ACTIVATED")
+    print("📷 GROQ VISION TICKET SCANNER ACTIVATED")
     print("-> Hold the ticket up to your camera.")
     print("-> Press the 'SPACE' bar to snap a photo.")
     print("-> The scanner will process the image and close automatically.")
@@ -123,10 +150,10 @@ def start_live_scanner():
         
         key = cv2.waitKey(1) & 0xFF
         
-        if key == 32: 
+        if key == 32: # SPACE bar
             extract_ticket_data(frame)
             print("Shutting down scanner camera...")
-            break
+            break # Ensures the loop terminates after a single successful scan
             
         elif key == ord('q'):
             print("\nClosing scanner. Goodbye!")

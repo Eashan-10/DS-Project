@@ -21,16 +21,18 @@ client = Groq(api_key=api_key)
 # ==========================================
 # 2. VALIDATION DATABASE
 # ==========================================
-WESTERN_LINE = ["CHURCHGATE", "MARINE LINES", "CHARNI ROAD", "GRANT ROAD", "MUMBAI CENTRAL", "MAHALAXMI", "LOWER PAREL", "PRABHADEVI", "DADAR", "MATUNGA ROAD", "MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON", "MALAD", "KANDIVALI", "BORIVALI", "DAHISAR", "MIRA ROAD", "BHAYANDAR", "NAIGAON", "VASAI ROAD", "NALASOPARA", "VIRAR"]
-CENTRAL_LINE = ["CSMT", "MASJID", "SANDHURST ROAD", "BYCULLA", "CHINCHPOKLI", "CURREY ROAD", "PAREL", "DADAR", "MATUNGA", "SION", "KURLA", "GHATKOPAR", "THANE", "DOMBIVLI", "KALYAN", "ULHASNAGAR", "AMBERNATH"]
-HARBOUR_LINE = ["MAHIM", "BANDRA", "KHAR ROAD", "SANTACRUZ", "VILE PARLE", "ANDHERI", "JOGESHWARI", "RAM MANDIR", "GOREGAON","KINGS CIRCLE", "VADALA ROAD", "SEWRI","COTTON GREEN" ,"REARY ROAD" ,"DOCKYARD ROAD" ,"SANDHURST ROAD", "CHEMBUR", "VASHI", "NERUL", "BELAPUR", "PANVEL", "CSMT"]
+WESTERN_LINE = ["CHURCHGATE","MARINE LINES","CHARNI ROAD","GRANT ROAD","MUMBAI CENTRAL","MAHALAXMI","LOWER PAREL","PRABHADEVI","DADAR","MATUNGA ROAD","MAHIM","BANDRA","KHAR ROAD","SANTACRUZ","VILE PARLE","ANDHERI","BORIVALI","VIRAR"]
+CENTRAL_LINE = ["CSMT","MASJID","SANDHURST ROAD","BYCULLA","CHINCHPOKLI","CURREY ROAD","PAREL","DADAR","MATUNGA","SION","KURLA","VIDYAVIHAR","GHATKOPAR","THANE","DOMBIVLI","KALYAN"]
+HARBOUR_LINE = ["CSMT","MASJID","SANDHURST ROAD","WADALA ROAD","KURLA","CHEMBUR","VASHI","NERUL","BELAPUR","PANVEL"]
+TRANS_HARBOUR = ["THANE","VASHI","PANVEL"]
+
 # Combine them into one string for the AI
-ALL_STATIONS = ", ".join(set(CENTRAL_LINE + HARBOUR_LINE + WESTERN_LINE))
+ALL_STATIONS = ", ".join(set(CENTRAL_LINE + HARBOUR_LINE + WESTERN_LINE + TRANS_HARBOUR))
 
 
 def extract_ticket_data(image_frame):
     print("\n" + "="*40)
-    print("🧠 SENDING TICKET TO GROQ (LLAMA 3.2 VISION)...")
+    print("🧠 SENDING TICKET TO GROQ (LLAMA 4 SCOUT)...")
     print("="*40)
     
     # 1. Boost contrast and brightness to separate faded ink from dark borders
@@ -45,11 +47,10 @@ def extract_ticket_data(image_frame):
     resized_frame = cv2.resize(enhanced_frame, (new_width, new_height))
 
     # 3. Convert OpenCV frame to a Base64 String for Groq
-    # Groq API requires the image to be passed as a base64 encoded string
     _, buffer = cv2.imencode('.jpg', resized_frame)
     base64_image = base64.b64encode(buffer).decode('utf-8')
 
-    prompt = f"""
+    prompt = f"""   
     You are an expert at reading Mumbai Local train tickets. You must be able to read BOTH physically printed dot-matrix tickets and digital 'Railone' app tickets.
     
     First, analyze the image to determine the Ticket Category: "Journey Ticket", "Return Ticket", or "Season Pass".
@@ -86,7 +87,6 @@ def extract_ticket_data(image_frame):
     """
 
     try:
-        # 4. Fire the Base64 image and prompt to Groq's Vision Model
         response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
@@ -103,10 +103,9 @@ def extract_ticket_data(image_frame):
                     ],
                 }
             ],
-            temperature=0.1, # Low temperature forces stricter JSON formatting
+            temperature=0.1, 
         )
 
-        # Extract response text and clean up any accidental markdown blocks 
         raw_response = response.choices[0].message.content
         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
         data = json.loads(clean_json)
@@ -116,14 +115,18 @@ def extract_ticket_data(image_frame):
         for key, value in data.items():
             print(f"{key.ljust(22)}: {value}")
         print("-" * 40 + "\n")
+        
+        # ✅ THE CRITICAL LINK: This hands the data back to main.py
+        return data
 
     except json.JSONDecodeError:
         print("\n❌ Parsing Error: The AI did not return a valid JSON object.")
         print(f"Raw Output: {raw_response}\n")
+        return None # ✅ Prevents backend crash
     except Exception as e:
         print(f"\n❌ Network or API Error: Could not verify ticket.")
         print(f"Details: {e}")
-        print("Please check your internet connection and try again.\n")
+        return None # ✅ Prevents backend crash
 
 
 def start_live_scanner():
@@ -143,20 +146,15 @@ def start_live_scanner():
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("Failed to grab camera frame.")
             break
             
         cv2.imshow("Mumbai Local Ticket Scanner", frame)
-        
         key = cv2.waitKey(1) & 0xFF
         
         if key == 32: # SPACE bar
             extract_ticket_data(frame)
-            print("Shutting down scanner camera...")
-            break # Ensures the loop terminates after a single successful scan
-            
+            break
         elif key == ord('q'):
-            print("\nClosing scanner. Goodbye!")
             break
 
     cap.release()
